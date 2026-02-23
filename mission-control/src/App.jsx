@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import './App.css'
 
-const STORAGE_KEY = 'leftburst-mission-control-tasks'
+const API_BASE_URL = 'http://localhost:3001'
 
 const COLUMNS = [
   { key: 'ideas', label: 'Ideas' },
@@ -29,60 +29,6 @@ const defaultTaskValues = {
   status: 'ideas',
 }
 
-const seedTasks = [
-  {
-    id: createId(),
-    title: 'Metal Fight nostalgia tournament concept',
-    description: 'Draft episode structure and bracket for community battle concept.',
-    priority: 'High',
-    category: 'Video Idea',
-    dueDate: '2026-02-27',
-    assignee: 'Noah',
-    status: 'ideas',
-  },
-  {
-    id: createId(),
-    title: 'UX-02 combo testing notes',
-    description: 'Compile launch consistency data and finalize key talking points.',
-    priority: 'Medium',
-    category: 'Research',
-    dueDate: '2026-02-25',
-    assignee: 'Burst',
-    status: 'in-progress',
-  },
-  {
-    id: createId(),
-    title: 'Thumbnail red streak pass',
-    description: 'Test motion lines and face crop contrast for CTR improvement.',
-    priority: 'High',
-    category: 'Thumbnail',
-    dueDate: '2026-02-24',
-    assignee: 'Burst',
-    status: 'review',
-  },
-  {
-    id: createId(),
-    title: 'Clip naming automation script',
-    description: 'Added timestamp-based renaming presets for recording workflow.',
-    priority: 'Low',
-    category: 'Software',
-    dueDate: '2026-02-20',
-    assignee: 'Noah',
-    status: 'done',
-  },
-]
-
-function loadInitialTasks() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY)
-    if (!saved) return seedTasks
-    const parsed = JSON.parse(saved)
-    return Array.isArray(parsed) ? parsed : seedTasks
-  } catch {
-    return seedTasks
-  }
-}
-
 function formatDueDate(dateString) {
   if (!dateString) return 'No due date'
   const date = new Date(`${dateString}T00:00:00`)
@@ -95,15 +41,63 @@ function formatDueDate(dateString) {
 }
 
 function App() {
-  const [tasks, setTasks] = useState(loadInitialTasks)
+  const [tasks, setTasks] = useState([])
   const [filters, setFilters] = useState({ category: 'All', assignee: 'All' })
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingTaskId, setEditingTaskId] = useState(null)
   const [formData, setFormData] = useState(defaultTaskValues)
+  const [isLoading, setIsLoading] = useState(true)
+  const [apiError, setApiError] = useState('')
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks))
-  }, [tasks])
+    void fetchTasks()
+  }, [])
+
+  const fetchTasks = async () => {
+    setIsLoading(true)
+    setApiError('')
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/tasks`)
+      if (!response.ok) {
+        throw new Error(`Failed to fetch tasks (${response.status})`)
+      }
+
+      const data = await response.json()
+      setTasks(Array.isArray(data) ? data : [])
+    } catch {
+      setApiError('Unable to reach the task API at http://localhost:3001.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const saveTaskToApi = async (task, isEditing) => {
+    const url = isEditing ? `${API_BASE_URL}/tasks/${task.id}` : `${API_BASE_URL}/tasks`
+    const method = isEditing ? 'PUT' : 'POST'
+
+    const response = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(task),
+    })
+
+    if (!response.ok) {
+      throw new Error(`Failed to ${isEditing ? 'update' : 'create'} task (${response.status})`)
+    }
+
+    return response.json().catch(() => task)
+  }
+
+  const deleteTaskFromApi = async (taskId) => {
+    const response = await fetch(`${API_BASE_URL}/tasks/${taskId}`, {
+      method: 'DELETE',
+    })
+
+    if (!response.ok) {
+      throw new Error(`Failed to delete task (${response.status})`)
+    }
+  }
 
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
@@ -148,7 +142,7 @@ function App() {
     setFormData(defaultTaskValues)
   }
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault()
 
     const payload = {
@@ -159,21 +153,40 @@ function App() {
 
     if (!payload.title) return
 
-    if (editingTaskId) {
-      setTasks((current) =>
-        current.map((task) =>
-          task.id === editingTaskId ? { ...task, ...payload } : task,
-        ),
-      )
-    } else {
-      setTasks((current) => [...current, { id: createId(), ...payload }])
-    }
+    setApiError('')
 
-    closeModal()
+    try {
+      if (editingTaskId) {
+        const existingTask = tasks.find((task) => task.id === editingTaskId)
+        if (!existingTask) return
+
+        const updatedTask = { ...existingTask, ...payload, id: editingTaskId }
+        const savedTask = await saveTaskToApi(updatedTask, true)
+
+        setTasks((current) =>
+          current.map((task) => (task.id === editingTaskId ? savedTask : task)),
+        )
+      } else {
+        const newTask = { id: createId(), ...payload }
+        const createdTask = await saveTaskToApi(newTask, false)
+        setTasks((current) => [...current, createdTask])
+      }
+
+      closeModal()
+    } catch {
+      setApiError('Unable to reach the task API at http://localhost:3001.')
+    }
   }
 
-  const handleDelete = (taskId) => {
-    setTasks((current) => current.filter((task) => task.id !== taskId))
+  const handleDelete = async (taskId) => {
+    setApiError('')
+
+    try {
+      await deleteTaskFromApi(taskId)
+      setTasks((current) => current.filter((task) => task.id !== taskId))
+    } catch {
+      setApiError('Unable to reach the task API at http://localhost:3001.')
+    }
   }
 
   const tasksByColumn = useMemo(() => {
@@ -250,72 +263,106 @@ function App() {
         </div>
       </section>
 
+      {apiError && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: '1rem',
+            padding: '0.9rem 1rem',
+            borderRadius: '12px',
+            border: '1px solid rgba(255, 107, 107, 0.35)',
+            background: 'rgba(255, 107, 107, 0.12)',
+            color: 'inherit',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '0.75rem',
+            flexWrap: 'wrap',
+          }}
+        >
+          <span>{apiError}</span>
+          <button type="button" className="secondary-button" onClick={fetchTasks}>
+            Retry
+          </button>
+        </div>
+      )}
+
       <main className="kanban-board" aria-label="Kanban board">
-        {COLUMNS.map((column) => (
-          <section key={column.key} className="kanban-column" aria-labelledby={`col-${column.key}`}>
-            <header className="column-header">
-              <h2 id={`col-${column.key}`}>{column.label}</h2>
-              <span className="column-count">{tasksByColumn[column.key]?.length ?? 0}</span>
-            </header>
+        {isLoading ? (
+          <div className="empty-state" role="status" aria-live="polite">
+            Loading tasks...
+          </div>
+        ) : (
+          COLUMNS.map((column) => (
+            <section
+              key={column.key}
+              className="kanban-column"
+              aria-labelledby={`col-${column.key}`}
+            >
+              <header className="column-header">
+                <h2 id={`col-${column.key}`}>{column.label}</h2>
+                <span className="column-count">{tasksByColumn[column.key]?.length ?? 0}</span>
+              </header>
 
-            <div className="column-cards">
-              {(tasksByColumn[column.key] ?? []).length === 0 ? (
-                <div className="empty-state">No tasks match current filters.</div>
-              ) : (
-                tasksByColumn[column.key].map((task) => (
-                  <article
-                    key={task.id}
-                    className="task-card"
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openEditModal(task)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        openEditModal(task)
-                      }
-                    }}
-                  >
-                    <div className="task-card-top">
-                      <h3>{task.title}</h3>
-                      <button
-                        type="button"
-                        className="delete-button"
-                        aria-label={`Delete ${task.title}`}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          handleDelete(task.id)
-                        }}
-                      >
-                        ×
-                      </button>
-                    </div>
+              <div className="column-cards">
+                {(tasksByColumn[column.key] ?? []).length === 0 ? (
+                  <div className="empty-state">No tasks match current filters.</div>
+                ) : (
+                  tasksByColumn[column.key].map((task) => (
+                    <article
+                      key={task.id}
+                      className="task-card"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openEditModal(task)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          openEditModal(task)
+                        }
+                      }}
+                    >
+                      <div className="task-card-top">
+                        <h3>{task.title}</h3>
+                        <button
+                          type="button"
+                          className="delete-button"
+                          aria-label={`Delete ${task.title}`}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void handleDelete(task.id)
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
 
-                    <p className="task-description">{task.description || 'No description.'}</p>
+                      <p className="task-description">{task.description || 'No description.'}</p>
 
-                    <div className="task-meta-row">
-                      <span
-                        className={`badge priority-badge priority-${task.priority.toLowerCase()}`}
-                      >
-                        {task.priority}
-                      </span>
-                      <span className="badge category-badge">{task.category}</span>
-                    </div>
+                      <div className="task-meta-row">
+                        <span
+                          className={`badge priority-badge priority-${task.priority.toLowerCase()}`}
+                        >
+                          {task.priority}
+                        </span>
+                        <span className="badge category-badge">{task.category}</span>
+                      </div>
 
-                    <div className="task-footer">
-                      <span className="due-date">Due {formatDueDate(task.dueDate)}</span>
-                      <span
-                        className={`badge assignee-badge assignee-${task.assignee.toLowerCase()}`}
-                      >
-                        {task.assignee}
-                      </span>
-                    </div>
-                  </article>
-                ))
-              )}
-            </div>
-          </section>
-        ))}
+                      <div className="task-footer">
+                        <span className="due-date">Due {formatDueDate(task.dueDate)}</span>
+                        <span
+                          className={`badge assignee-badge assignee-${task.assignee.toLowerCase()}`}
+                        >
+                          {task.assignee}
+                        </span>
+                      </div>
+                    </article>
+                  ))
+                )}
+              </div>
+            </section>
+          ))
+        )}
       </main>
 
       {isModalOpen && (
@@ -323,7 +370,9 @@ function App() {
           formData={formData}
           setFormData={setFormData}
           onClose={closeModal}
-          onSubmit={handleSubmit}
+          onSubmit={(event) => {
+            void handleSubmit(event)
+          }}
           isEditing={Boolean(editingTaskId)}
         />
       )}
